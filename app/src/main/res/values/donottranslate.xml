@@ -46,4 +46,7 @@
     <!-- DRM -->
     <string name="sitePermissionsSettingsDRM">DRM</string>
 
+    <string name="imageCaptureCameraGalleryDisambiguationCamera">Camera</string>
+    <string name="imageCaptureCameraGalleryDisambiguationGallery">Gallery</string>
+
 </resources>

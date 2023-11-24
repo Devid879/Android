@@ -112,7 +112,14 @@ class BrowserChromeClient @Inject constructor(
         fileChooserParams: FileChooserParams,
     ): Boolean {
         return try {
-            webViewClientListener?.showFileChooser(filePathCallback, fileChooserParams)
+            Timber.v("onShowFileChooser invoked on %s for types %s", webView.url, fileChooserParams.acceptTypes.joinToString(", "))
+
+            if (fileChooserParams.acceptTypes.contains("image/*")) {
+                Timber.v("onShowFileChooser invoked for an image; need to offer a way to use existing image or capture new one")
+                webViewClientListener?.showExistingImageOrCameraChooser(filePathCallback, fileChooserParams)
+            } else {
+                webViewClientListener?.showFileChooser(filePathCallback, fileChooserParams)
+            }
             true
         } catch (e: Throwable) {
             // cancel the request using the documented way

@@ -26,10 +26,12 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.*
 import android.print.PrintAttributes
 import android.print.PrintManager
+import android.provider.MediaStore
 import android.text.Editable
 import android.view.*
 import android.view.View.*
@@ -37,7 +39,7 @@ import android.view.inputmethod.EditorInfo
 import android.webkit.PermissionRequest
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
-import android.webkit.WebChromeClient
+import android.webkit.WebChromeClient.FileChooserParams
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebView.FindListener
@@ -55,6 +57,7 @@ import androidx.annotation.RequiresApi
 import androidx.annotation.StringRes
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.net.toUri
 import androidx.core.text.HtmlCompat
 import androidx.core.text.HtmlCompat.FROM_HTML_MODE_LEGACY
@@ -193,7 +196,6 @@ import com.duckduckgo.autofill.api.store.AutofillStore.ContainsCredentialsResult
 import com.duckduckgo.browser.api.brokensite.BrokenSiteData
 import com.duckduckgo.common.ui.DuckDuckGoFragment
 import com.duckduckgo.common.ui.store.BrowserAppTheme
-import com.duckduckgo.common.ui.view.*
 import com.duckduckgo.common.ui.view.DaxDialog
 import com.duckduckgo.common.ui.view.DaxDialogListener
 import com.duckduckgo.common.ui.view.KeyboardAwareEditText
@@ -444,6 +446,7 @@ class BrowserTabFragment :
     // Used to represent a file to download, but may first require permission
     private var pendingFileDownload: PendingFileDownload? = null
 
+    private var cameraOutputUri: Uri? = null
     private var pendingUploadTask: ValueCallback<Array<Uri>>? = null
 
     private lateinit var renderer: BrowserTabFragmentRenderer
@@ -1190,7 +1193,10 @@ class BrowserTabFragment :
             is Command.SharePromoLinkRMF -> launchSharePromoRMFPageChooser(it.url, it.shareTitle)
             is Command.CopyLink -> clipboardManager.setPrimaryClip(ClipData.newPlainText(null, it.url))
             is Command.ShowFileChooser -> {
-                launchFilePicker(it)
+                launchFilePicker(it.fileChooserParams, it.filePathCallback)
+            }
+            is Command.ShowExistingImageOrCameraChooser -> {
+                launchImageOrCameraChooser(it.fileChooserParams, it.filePathCallback)
             }
 
             is Command.AddHomeShortcut -> {
@@ -1820,8 +1826,32 @@ class BrowserTabFragment :
         resultCode: Int,
         data: Intent?,
     ) {
-        if (requestCode == REQUEST_CODE_CHOOSE_FILE) {
-            handleFileUploadResult(resultCode, data)
+        when (requestCode) {
+            REQUEST_CODE_CHOOSE_FILE -> handleFileUploadResult(resultCode, data)
+            101 -> {
+                Timber.w("zzz in here... what to do now?. uri is %s and result code is %d", cameraOutputUri, resultCode)
+
+                when {
+                    data?.data != null -> {
+                        Timber.i("zzz single image selected from gallery")
+                    }
+                    data?.clipData != null -> {
+                        Timber.i("zzz multiple images selected from gallery")
+                    }
+                    else -> {
+                        Timber.i("zzz DOES THIS MEAN CAMERA SELECTED??")
+                        if (hasCameraPermission()) {
+                            Timber.d("zzz camera permission already granted")
+                            cameraLauncher.launch(Intent(MediaStore.ACTION_IMAGE_CAPTURE))
+                        } else {
+                            Timber.d("zzz camera permission not granted, requesting")
+                            requestPermissions(arrayOf(Manifest.permission.CAMERA), 213)
+                        }
+                    }
+                }
+
+                pendingUploadTask?.onReceiveValue(null)
+            }
         }
     }
 
@@ -2588,6 +2618,56 @@ class BrowserTabFragment :
         viewModel.onViewVisible()
     }
 
+    private fun hasCameraPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private val cameraLauncher = registerForActivityResult(StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK) {
+            if (result?.data != null) {
+                val bitmap = result.data?.extras?.get("data") as Bitmap?
+                if (bitmap != null) {
+                    Timber.w("zzz, took picture [${bitmap.width}x${bitmap.height}], ${bitmap.byteCount} bytes")
+                } else {
+                    Timber.w("zzz, took picture but no data returned")
+                    mCameraFilePath?.let { cameraFile ->
+                        Timber.i("zzz file maybe in $cameraFile. file exists? ${File(cameraFile).exists()}")
+
+                        pendingUploadTask?.let { uploadTask ->
+                            uploadTask.onReceiveValue(
+                                if (File(cameraFile).exists()) {
+                                    arrayOf(Uri.fromFile(File(cameraFile)))
+                                } else {
+                                    null
+                                },
+                            )
+                        }
+                    }
+                }
+
+                // pendingUploadTask?.let {
+
+                //  it.onReceiveValue(null)
+
+                // val cachedImage = File(requireContext().cacheDir, "image.jpg")
+                // cachedImage.mkdirs()
+                // val stream = FileOutputStream("$cachedImage/$tabId")
+                // bitmap.compress(Bitmap.CompressFormat.JPEG, 100, stream)
+                // stream.close()
+                // val uri = FileProvider.getUriForFile(requireContext(), "com.duckduckgo.mobile.android.fileprovider", cachedImage)
+                // val uri =  Uri.fromFile(cachedImage)
+                // Timber.w("zzz uri of created temp image ${cachedImage.path} file is $uri")
+
+                // pendingUploadTask?.let {
+                //     it.onReceiveValue(arrayOf(cachedImage.path.toUri()))
+                //     //pendingUploadTask = null
+                //
+                // }
+                // }
+            }
+        }
+    }
+
     private fun launchDownloadMessagesJob() {
         downloadMessagesJob += lifecycleScope.launch {
             viewModel.downloadCommands().cancellable().collect {
@@ -2704,11 +2784,82 @@ class BrowserTabFragment :
         showDialogHidingPrevious(downloadConfirmationFragment, DOWNLOAD_CONFIRMATION_TAG)
     }
 
-    private fun launchFilePicker(command: Command.ShowFileChooser) {
-        pendingUploadTask = command.filePathCallback
-        val canChooseMultipleFiles = command.fileChooserParams.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE
-        val intent = fileChooserIntentBuilder.intent(command.fileChooserParams.acceptTypes, canChooseMultipleFiles)
+    private fun launchFilePicker(
+        fileChooserParams: FileChooserParams,
+        filePathCallback: ValueCallback<Array<Uri>>,
+    ) {
+        pendingUploadTask = filePathCallback
+        val canChooseMultipleFiles = fileChooserParams.mode == FileChooserParams.MODE_OPEN_MULTIPLE
+        val intent = fileChooserIntentBuilder.intent(fileChooserParams.acceptTypes, canChooseMultipleFiles)
         startActivityForResult(intent, REQUEST_CODE_CHOOSE_FILE)
+    }
+
+    var mCameraFilePath: String? = null
+
+    private fun launchCameraCapture(
+        fileChooserParams: FileChooserParams,
+        filePathCallback: ValueCallback<Array<Uri>>,
+    ) {
+        pendingUploadTask = filePathCallback
+
+        if (hasCameraPermission()) {
+            Timber.d("zzz camera permission already granted")
+            val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).also { intent ->
+                val externalDataDir: File = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM)
+                val cameraDataDir = File(externalDataDir.absolutePath + File.separator + "browser-photos")
+                cameraDataDir.mkdirs()
+                (cameraDataDir.absolutePath + File.separator + System.currentTimeMillis() + ".jpg").also { url ->
+                    val safeUri = FileProvider.getUriForFile(requireContext(), requireContext().packageName + ".provider", File(url))
+                    intent.putExtra(MediaStore.EXTRA_OUTPUT, safeUri)
+                    mCameraFilePath = url
+                }
+            }
+            cameraLauncher.launch(intent)
+        } else {
+            Timber.d("zzz camera permission not granted, requesting")
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), 213)
+        }
+    }
+
+    private fun launchImageOrCameraChooser(
+        fileChooserParams: FileChooserParams,
+        filePathCallback: ValueCallback<Array<Uri>>,
+    ) {
+        pendingUploadTask = filePathCallback
+
+        // val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).also {
+        //     it.flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        //     it.putExtra(MediaStore.EXTRA_OUTPUT, cameraOutputUri)
+        // }
+        //
+        // val canChooseMultipleFiles = fileChooserParams.mode == FileChooserParams.MODE_OPEN_MULTIPLE
+        // val galleryIntent = fileChooserIntentBuilder.intent(fileChooserParams.acceptTypes, canChooseMultipleFiles)
+        //
+        // //val chooserIntent = Intent.createChooser(galleryIntent, "Select Image")
+        // val chooserIntent = Intent(Intent.ACTION_CHOOSER).also {
+        //     it.putExtra(Intent.EXTRA_INTENT, galleryIntent)
+        //     it.putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
+        // }
+        // startActivityForResult(chooserIntent, 101)
+
+        context?.let {
+            TextAlertDialogBuilder(it)
+                .setTitle("Select an image")
+                .setMessage("You can select an image from your gallery or use the camera take a new photo")
+                .setPositiveButton(R.string.imageCaptureCameraGalleryDisambiguationGallery)
+                .setNegativeButton(R.string.imageCaptureCameraGalleryDisambiguationCamera)
+                .addEventListener(
+                    object : TextAlertDialogBuilder.EventListener() {
+                        override fun onPositiveButtonClicked() {
+                            launchFilePicker(fileChooserParams, filePathCallback)
+                        }
+
+                        override fun onNegativeButtonClicked() {
+                            launchCameraCapture(fileChooserParams, filePathCallback)
+                        }
+                    },
+                ).show()
+        }
     }
 
     private fun minSdk30(): Boolean {
@@ -2749,6 +2900,20 @@ class BrowserTabFragment :
                         viewModel.onSystemLocationPermissionDeniedOneTime()
                     } else {
                         viewModel.onSystemLocationPermissionDeniedTwice()
+                    }
+                }
+            }
+
+            213 -> {
+                if ((grantResults.isNotEmpty()) && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    // permission granted; should re-try what triggered this
+                } else {
+                    if (ActivityCompat.shouldShowRequestPermissionRationale(requireActivity(), Manifest.permission.CAMERA)) {
+                        // refused, but can show additional rationale
+                        Timber.w("zzz camera permission refused, but opportunity to show further rationale")
+                    } else {
+                        // outright refused
+                        Timber.w("zzz camera permission outright refused")
                     }
                 }
             }

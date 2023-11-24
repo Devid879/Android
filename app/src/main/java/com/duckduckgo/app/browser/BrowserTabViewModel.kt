@@ -30,6 +30,7 @@ import android.webkit.GeolocationPermissions
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebChromeClient.FileChooserParams
 import android.webkit.WebView
 import androidx.annotation.AnyThread
 import androidx.annotation.VisibleForTesting
@@ -391,6 +392,10 @@ class BrowserTabViewModel @Inject constructor(
         class BrokenSiteFeedback(val data: BrokenSiteData) : Command()
         object DismissFindInPage : Command()
         class ShowFileChooser(
+            val filePathCallback: ValueCallback<Array<Uri>>,
+            val fileChooserParams: WebChromeClient.FileChooserParams,
+        ) : Command()
+        class ShowExistingImageOrCameraChooser(
             val filePathCallback: ValueCallback<Array<Uri>>,
             val fileChooserParams: WebChromeClient.FileChooserParams,
         ) : Command()
@@ -1847,6 +1852,13 @@ class BrowserTabViewModel @Inject constructor(
         fileChooserParams: WebChromeClient.FileChooserParams,
     ) {
         command.value = ShowFileChooser(filePathCallback, fileChooserParams)
+    }
+
+    override fun showExistingImageOrCameraChooser(
+        filePathCallback: ValueCallback<Array<Uri>>,
+        fileChooserParams: FileChooserParams,
+    ) {
+        command.value = ShowExistingImageOrCameraChooser(filePathCallback, fileChooserParams)
     }
 
     private fun currentGlobalLayoutState(): GlobalLayoutViewState = globalLayoutState.value!!
